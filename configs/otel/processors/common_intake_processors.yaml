@@ -1,0 +1,71 @@
+# Included in otelcol-main.yaml at the start of metrics/common_intake pipeline
+# These processors apply to ALL metrics before fan-out.
+
+memory_limiter: # First line of defense
+  check_interval: 1s
+  limit_mib: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB_QUARTER:-512}
+
+resourcedetection/common:
+  detectors: [env, system, ec2, ecs, gcp, azure] # Comprehensive detection
+  timeout: 10s
+  override: false # Important: Do not override existing resource attributes if present
+  system: # Specific config for system detector
+    hostname_sources: [os,cname,dns] # Order of preference for hostname
+
+# Common enrichment: benchmark tags, environment, and dynamic profile tag
+
+transform/common_enrichment_and_profile_tag:
+  error_mode: ignore
+  metric_statements: # Apply to resource attributes of metrics
+    - context: resource
+      statements:
+        # Static benchmark/deployment tags from .env
+        - set(attributes["benchmark.id"], "${BENCHMARK_ID}")
+        - set(attributes["deployment.environment"], "${DEPLOYMENT_ENV}")
+        # Ensure a default service.name if not provided by instrumentation/resourcedetection
+        - upsert_gauge(attributes["service.name"], "unknown_process_service") where attributes["service.name"] == nil
+        # --- DYNAMIC PROFILE TAGGING ---
+        # Reads 'optimisation_profile' from the control file (via config_sources) and sets it as a resource attribute.
+        # Fallbacks ensure stability if control file is missing/malformed.
+        - set(attributes["phoenix.optimisation_profile"], GetPath(cfg("ctlfile_optimization_mode"), "optimisation_profile", "conservative"))
+        - set(attributes["phoenix.control.correlation_id"], GetPath(cfg("ctlfile_optimization_mode"), "correlation_id", "init-cid-main"))
+        - set(attributes["phoenix.control.config_version"], FormatString("%d", ToInt(GetPath(cfg("ctlfile_optimization_mode"), "config_version", 0))))
+        - set(attributes["phoenix.control.last_updated"], GetPath(cfg("ctlfile_optimization_mode"), "last_updated", "1970-01-01T00:00:00Z"))
+        - set(attributes["phoenix.control.trigger_reason"], GetPath(cfg("ctlfile_optimization_mode"), "trigger_reason", "unknown"))
+        # Expose if experimental pipeline should be active based on control file
+        - set(attributes["phoenix.control.experimental_pipeline_enabled"], FormatString("%t", GetPath(cfg("ctlfile_optimization_mode"), "pipelines.experimental_enabled", false)))
+
+# Priority classification engine based on process attributes
+
+transform/priority_classification_engine: # Renamed from priority_engine for clarity
+  error_mode: ignore
+  metric_statements: # Operates on resource attributes where process info lives
+    - context: resource
+      statements:
+        # Tier 1: Critical Infrastructure (Databases, Core K8s, etc.)
+        - set(attributes["phoenix.priority"], "critical") where IsMatch(attributes["process.executable.name"], "^(postgres|mysqld|redis-server|mongod|elasticsearch|etcd|consul|vault|kube-apiserver|kube-controller-manager|kube-scheduler)") and (IsMatch(attributes["process.command_line"], ".(-Dapp|--service|--run-app).") or attributes["process.owner"] matches "app_.") and not IsMatch(attributes["process.command_line"], ".(test|dev|debug|tool).*")
+        # Tier 4: High Priority Web/Proxy Servers
+        - set(attributes["phoenix.priority"], "high") where attributes["phoenix.priority"] == nil and IsMatch(attributes["process.executable.name"], "^(nginx|envoy|haproxy|caddy|apache2|httpd)")
+        # Default: any process not matching above defaults to "medium" (change to "low" for more aggressive default)
+        - set(attributes["phoenix.priority"], "medium") where attributes["phoenix.priority"] == nil
+
+cumulativetodelta: # Convert counters to deltas early
+  metrics:
+    - "process.cpu.time"
+    - "process.disk.io.read_bytes"
+    - "process.disk.io.write_bytes"
+    # Add other cumulative counters if present, e.g., from system scrapers if those were enabled
+
+# Global attribute stripping of high-cardinality identifiers not used for routing/priority
+
+transform/global_initial_strip:
+  error_mode: ignore
+  metric_statements:
+    - context: resource # These are resource attributes from hostmetrics/process
+      statements:
+        # process.pid is too volatile for general export. Keep only if specifically needed for a short deep-dive.
+        # For now, assume it's NOT needed for New Relic entity correlation if service.name/host.name/k8s are good.
+        - delete_key(attributes, "process.pid")
+        - delete_key(attributes, "process.parent_pid")
+        # process.owner and process.command_line are used by priority_engine, so they are kept through that.
+        # They will be stripped later in pipeline-specific cleanup if not critical.

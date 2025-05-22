@@ -1,0 +1,135 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": true, "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"
+      },
+      {
+        "name": "Optimization Profile Changes",
+        "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+        "expr": "changes(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"optimised\"}[1m]) > 0",
+        "iconColor": "rgba(255, 96, 96, 1)", "tags": ["control-loop", "profile-change", "phoenix"],
+        "title": "Profile Change",
+        "text": "Optimised TS: {{ $value }}"
+      }
+    ]
+  },
+  "editable": true, "fiscalYearStartMonth": 0, "graphTooltip": 0, "id": null, "links": [], "liveNow": false,
+  "panels": [
+    {
+      "type": "text", "title": "Phoenix v3 - Mission Control Documentation",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 2 },
+      "options": {
+        "content": "## Phoenix v3 Process Metrics - Mission Control\nSingle-screen NOC board showing overall stack health, optimization effectiveness, and key performance indicators. What you pin on the wall.",
+        "mode": "markdown"
+      }
+    },
+    {
+      "title": "Estimated Cost Reduction % (Optimised vs Full)",
+      "type": "gauge", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 0, "y": 2, "w": 10, "h": 5 },
+      "targets": [
+        {"expr": "phoenix:cost_reduction_ratio * 100", "legendFormat": "Cost Reduction"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"}, "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "orange", "value": 60}, {"color": "green", "value": 75}
+          ]},
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": {"textMode": "value_and_name"}
+        }
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "showThresholdLabels": true, "showThresholdMarkers": true}
+    },
+    {
+      "title": "Active Optimisation Profile",
+      "type": "stat", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 10, "y": 2, "w": 14, "h": 5 },
+      "targets": [
+        {
+          "expr": "max by (optimisation_profile) (phoenix_observer_kpi_store_control_file_info{job=\"otelcol-observer-metrics\"})",
+          "legendFormat": "Profile: {{optimisation_profile}}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": ""}, "orientation": "horizontal", "textMode": "value_and_name", "colorMode": "none", "graphMode": "none", "justifyMode": "auto"},
+      "fieldConfig": { "defaults": { "custom": {"align": "center", "displayMode": "auto"}, "color":{"mode":"value"}}}
+    },
+    {
+      "title": "Active Time Series Count by Pipeline (Output to Prometheus)",
+      "type": "timeseries", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 0, "y": 7, "w": 24, "h": 7 },
+      "targets": [
+        {"expr": "sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"full_fidelity\", job=\"otelcol-observer-metrics\"})", "legendFormat": "Full Fidelity Path TS"},
+        {"expr": "sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"optimised\", job=\"otelcol-observer-metrics\"})", "legendFormat": "Optimised Path TS"},
+        {"expr": "sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"experimental\", job=\"otelcol-observer-metrics\"})", "legendFormat": "Experimental Path TS"}
+      ],
+      "options": {"legend":{"displayMode":"table","placement":"right","showLegend":true},"tooltip":{"mode":"multi"}, "stacking": {"mode":"none"}},
+      "fieldConfig": {"defaults":{"custom":{"lineWidth":2,"fillOpacity":10,"drawStyle":"line"}}}
+    },
+    {
+      "title": "Top 5 CPU Consuming Processes (Optimised Pipeline)",
+      "type": "barchart", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "targets": [
+        {"expr": "topk(5, sum by (process_executable_name) (rate(phoenix_opt_final_output_process_cpu_time_total{job=\"otelcol-main-opt-output\"}[1m])))", "legendFormat": "{{process_executable_name}}", "format": "table", "instant": true}
+      ],
+      "options": {"orientation":"horizontal", "reduceOptions":{"calcs":["lastNotNull"],"fields":""},"showValue":"auto","legend":{"displayMode":"hidden"}}
+    },
+    {
+      "title": "Top 5 Memory Consuming Processes (Optimised Pipeline)",
+      "type": "barchart", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "targets": [
+        {"expr": "topk(5, sum by (process_executable_name) (phoenix_opt_final_output_process_memory_usage{job=\"otelcol-main-opt-output\"} / (1024*1024) ))", "legendFormat": "{{process_executable_name}} (MiB)", "format": "table", "instant": true}
+      ],
+      "options": {"orientation":"horizontal", "reduceOptions":{"calcs":["lastNotNull"],"fields":""},"showValue":"auto","legend":{"displayMode":"hidden"}},
+      "fieldConfig": {"defaults":{"unit":"decbytes"}}
+    },
+    {
+      "title": "Collector Health Status Grid",
+      "type": "stat", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 4 },
+      "targets": [
+        {"expr": "up{job=\"otelcol-main-telemetry\"}", "legendFormat": "Main Collector (Full Output Scrape)"},
+        {"expr": "up{job=\"otelcol-main-opt-output\"}", "legendFormat": "Main Collector (Opt Output Scrape)"},
+        {"expr": "up{job=\"otelcol-main-exp-output\"}", "legendFormat": "Main Collector (Exp Output Scrape)"},
+        {"expr": "up{job=\"otelcol-observer-metrics\"}", "legendFormat": "Observer Collector Scrape"},
+        {"expr": "up{job=\"synthetic-metrics-generator\"}", "legendFormat": "Synthetic Generator (if exposed)"}
+      ],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"],"fields":""},"orientation":"horizontal","textMode":"name","colorMode":"value","graphMode":"none","justifyMode":"auto"},
+      "fieldConfig": {"defaults":{"mappings":[{"type":"value","options":{"1":{"text":"UP","color":"green"},"0":{"text":"DOWN","color":"red"},"null":{"text":"N/A","color":"dark-red"}}}]}}
+    },
+    {
+      "title": "otelcol-main Resource Usage",
+      "type": "timeseries", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 6 },
+      "targets": [
+        {"expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"phoenix-vnext-otelcol-main-.*\"}[1m])) * 100", "legendFormat": "CPU %"},
+        {"expr": "container_memory_usage_bytes{name=~\"phoenix-vnext-otelcol-main-.*\"} / (1024*1024)", "legendFormat": "Memory MiB"}
+      ],
+      "options": {"legend":{"displayMode":"table","placement":"right"},"tooltip":{"mode":"multi"}}
+    },
+    {
+      "title": "otelcol-observer Resource Usage",
+      "type": "timeseries", "datasource": { "type": "prometheus", "uid": "prometheus_phoenix_v3" },
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 6 },
+      "targets": [
+        {"expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"phoenix-vnext-otelcol-observer-.*\"}[1m])) * 100", "legendFormat": "CPU %"},
+        {"expr": "container_memory_usage_bytes{name=~\"phoenix-vnext-otelcol-observer-.*\"} / (1024*1024)", "legendFormat": "Memory MiB"}
+      ],
+      "options": {"legend":{"displayMode":"table","placement":"right"},"tooltip":{"mode":"multi"}}
+    }
+  ],
+  "refresh": "15s", "schemaVersion": 37, "style": "dark",
+  "tags": ["phoenix-v3", "ultimate-stack", "process-metrics", "config-only", "mission-control"],
+  "templating": { "list": [] }, "time": { "from": "now-1h", "to": "now" }, "timepicker": {},
+  "timezone": "browser", "title": "Phoenix v3 - Mission Control",
+  "uid": "phoenix-v3-mission-control", "version": 5
+}

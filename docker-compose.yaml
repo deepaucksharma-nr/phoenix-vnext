@@ -6,11 +6,13 @@ services:
     pid: host # As per spec, for hostmetrics.process to see all processes.
     env_file: .env # Loads all variables from .env file
     environment:
+      CONTROL_SIGNALS_PATH_IN_CONTAINER: /etc/otelcol/control_signals/optimization_mode.yaml
       GOMAXPROCS: ${OTELCOL_MAIN_GOMAXPROCS:-4}
       GOMEMLIMIT: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-2560MiB}
     volumes:
       - ./configs/otel/collectors/main.yaml:/etc/otelcol/config.yaml:ro
-      - ./configs/control:/etc/otelcol/control:ro # Main only READS control signals
+      - ./configs/control:/etc/otelcol/control_signals:ro # Phoenix control signals
+      - ./configs/otel/processors:/etc/otelcol/processors:ro # Phoenix processor configs
       - /proc:/hostfs/proc:ro # Standard mount for host /proc
       - /sys:/hostfs/sys:ro   # Standard mount for host /sys
       - /etc/hostname:/hostfs/etc/hostname:ro # For host.name detection by resourcedetection
@@ -142,7 +144,7 @@ services:
     volumes:
       - ./configs/monitoring/grafana/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml:ro
       - ./configs/monitoring/grafana/dashboards_provider.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
-      - ./configs/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./configs/dashboards:/var/lib/grafana/dashboards:ro # Phoenix dashboards
       - ./data/grafana:/var/lib/grafana
     ports:
       - "3000:3000"

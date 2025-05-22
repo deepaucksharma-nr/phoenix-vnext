@@ -1,0 +1,118 @@
+# Prometheus Recording and Alerting Rules for Phoenix v3 Ultimate Stack
+# Revision 2025-05-22 · v3.0-final-uX
+
+groups:
+  - name: phoenix_kpi_rules
+    interval: 30s # Evaluate these rules every 30 seconds
+    rules:
+      - record: phoenix:cost_reduction_ratio
+        # Metric names from otelcol-observer which scrapes namespaced metrics from otelcol-main
+        # Assuming otelcol-observer re-labels them to have a common name e.g., 'phoenix_pipeline_output_cardinality_estimate'
+        # and a 'phoenix_pipeline_label' distinguishing them.
+        expr: |
+          (
+            sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="full_fidelity", job="otelcol-observer-metrics"})
+            -
+            sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="optimised", job="otelcol-observer-metrics"})
+          )
+          / # Divide by full_fidelity count, ensuring it's > 0 to avoid NaN/Inf
+          (sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="full_fidelity", job="otelcol-observer-metrics"}) > 0)
+        labels:
+          tier: "observability_control"
+          kpi_name: "cost_savings_optimised_pipeline"
+
+      - record: phoenix:active_optimisation_profile_is_conservative
+        expr: |
+          max by (optimisation_profile) (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", job="otelcol-observer-metrics", optimisation_profile="conservative"})
+          OR on() vector(0) # Ensure metric always exists
+        labels:
+          profile_name: "conservative"
+      - record: phoenix:active_optimisation_profile_is_balanced
+        expr: |
+          max by (optimisation_profile) (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", job="otelcol-observer-metrics", optimisation_profile="balanced"})
+          OR on() vector(0)
+        labels:
+          profile_name: "balanced"
+      - record: phoenix:active_optimisation_profile_is_aggressive
+        expr: |
+          max by (optimisation_profile) (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", job="otelcol-observer-metrics", optimisation_profile="aggressive"})
+          OR on() vector(0)
+        labels:
+          profile_name: "aggressive"
+
+      - record: phoenix:control_file_staleness_seconds
+        expr: |
+          time() - (max(phoenix_observer_kpi_store_control_file_info{field="config_version", job="otelcol-observer-metrics"} GAUGE_LAST_UPDATE_TIME) or vector(0))
+        labels:
+          check: "control_file_freshness"
+        # Note: GAUGE_LAST_UPDATE_TIME is a conceptual function for when Prometheus last saw an update to the gauge.
+        # A more common way is to check the 'last_updated' timestamp from the file content itself if exposed as a Unix timestamp metric.
+        # If 'phoenix_observer_kpi_store_control_file_info_last_updated_timestamp_seconds' metric existed:
+        # expr: time() - phoenix_observer_kpi_store_control_file_info_last_updated_timestamp_seconds
+
+  - name: phoenix_operational_alerts
+    rules:
+      - alert: PhoenixOptimizationDrift
+        expr: phoenix:cost_reduction_ratio < 0.40 and phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="full_fidelity", job="otelcol-observer-metrics"} > 1000 for 15m
+        labels: {severity: warning, team: observability, component: phoenix_control_loop}
+        annotations:
+          summary: "Phoenix optimised pipeline cost reduction is below 40% target (Currently: {{ $value | printf "%.2f" }})"
+          description: "The Optimised pipeline is not achieving the desired 40% cost reduction compared to Full Fidelity, and full fidelity has significant volume. Current reduction: {{ $value | printf "%.2f" }}. This might indicate an issue with optimised pipeline filters or unexpected data changes. Full Fidelity TS: {{ query "sum(phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label='full_fidelity', job='otelcol-observer-metrics'})" | first | value | printf "%.0f" }}."
+
+      - alert: PhoenixControlFileNotUpdating
+        # If config_version hasn't changed in a while
+        expr: changes(phoenix:control_config_version[15m]) == 0
+        for: 5m # If no version change for 15+5 = 20 minutes
+        labels: {severity: critical, team: observability, component: phoenix_control_loop}
+        annotations:
+          summary: "Phoenix control file (optimization_mode.yaml) has not been updated recently by the actuator."
+          description: "The control file version has not changed in over 15 minutes. The update-control-file.sh script might be stuck, or Prometheus KPIs for it might be missing. Last seen version: {{ $value }}."
+
+      - alert: PhoenixPipelineOutputMismatchExpected
+        # Example: If 'aggressive' profile is active, expect 'experimental' TS count to be lowest.
+        # This requires knowing the active profile and comparing TS counts.
+        expr: |
+          (phoenix:active_optimisation_profile_is_aggressive == 1) AND
+          (
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="experimental", job="otelcol-observer-metrics"}
+            >
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="optimised", job="otelcol-observer-metrics"}
+          )
+        for: 5m
+        labels: {severity: warning, team: sre, component: phoenix_pipelines}
+        annotations:
+          summary: "Phoenix Experimental pipeline has higher TS than Optimised during Aggressive mode."
+          description: "In 'aggressive' profile, Experimental pipeline ({{ $labels.instance }} TS: {{ $value }}) output should be lower than or similar to Optimised. This might indicate misconfiguration or unexpected data flow."
+
+      - alert: OtelcolMainHighCPU
+        expr: sum(rate(container_cpu_usage_seconds_total{name=~"phoenix-vnext-otelcol-main-.*"}[5m])) * 100 > 90 # 90% of 1 vCPU limit from spec
+        for: 10m
+        labels: {severity: warning, team: sre, component: otelcol_main}
+        annotations:
+          summary: "otelcol-main CPU usage is high ({{ $value | printf "%.1f" }}%)."
+          description: "otelcol-main container CPU usage is {{ $value | printf "%.1f" }}% of its allocated GOMAXPROCS, which is above 90% for 10 minutes."
+
+      - alert: OtelcolMainHighMemory
+        expr: container_memory_usage_bytes{name=~"phoenix-vnext-otelcol-main-.*"} / (1024*1024) > 870 # 85% of 1024MiB RAM limit
+        for: 10m
+        labels: {severity: critical, team: sre, component: otelcol_main}
+        annotations:
+          summary: "otelcol-main Memory usage is critically high ({{ $value | printf "%.0f" }} MiB)."
+          description: "otelcol-main container Memory usage is {{ $value | printf "%.0f" }} MiB, which is above 85% of its limit for 10 minutes."
+
+      # Similar alerts for otelcol-observer
+      - alert: OtelcolObserverHighCPU
+        expr: sum(rate(container_cpu_usage_seconds_total{name=~"phoenix-vnext-otelcol-observer-.*"}[5m])) * 100 > 45 # 90% of 0.5 vCPU limit
+        for: 5m
+        labels: {severity: warning, team: sre, component: otelcol_observer}
+        annotations:
+          summary: "otelcol-observer CPU usage is high."
+          description: "otelcol-observer container CPU usage is {{ $value | printf "%.2f" }}%."
+
+      - alert: OtelcolObserverHighMemory
+        expr: container_memory_usage_bytes{name=~"phoenix-vnext-otelcol-observer-.*"} / (1024*1024) > 230 # 90% of 256MiB RAM limit
+        for: 5m
+        labels: {severity: warning, team: sre, component: otelcol_observer}
+        annotations:
+          summary: "otelcol-observer Memory usage is high."
+          description: "otelcol-observer container Memory usage is {{ $value | printf "%.0f" }} MiB."

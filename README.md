@@ -74,7 +74,7 @@ docker-compose logs -f otelcol-observer
 - **Grafana Dashboard**: http://localhost:3000 (admin/admin)
 - **Prometheus**: http://localhost:9090
 - **Main Collector Metrics**: http://localhost:8888/metrics
-- **Observer Metrics**: http://localhost:8889/metrics
+- **Observer Metrics**: http://localhost:9888/metrics
 
 ## 📊 System Components
 

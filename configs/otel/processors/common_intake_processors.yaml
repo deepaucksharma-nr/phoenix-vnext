@@ -3,7 +3,7 @@
 
 memory_limiter: # First line of defense
   check_interval: 1s
-  limit_mib: '${ENV:OTELCOL_MAIN_GOMEMLIMIT_MIB*0.25 ?: 512}'
+  limit_mib: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB_QUARTER:-512}
 
 resourcedetection/common:
   detectors: [env, system, ec2, ecs, gcp, azure] # Comprehensive detection

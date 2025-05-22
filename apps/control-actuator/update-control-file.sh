@@ -34,6 +34,13 @@ HYSTERESIS_FACTOR="${HYSTERESIS_FACTOR:-0.1}"  # 10% hysteresis zone around thre
 STABILITY_PERIOD_SECONDS="${ADAPTIVE_CONTROLLER_STABILITY_SECONDS:-120}"
 CORRELATION_ID_PREFIX="${CORRELATION_ID_PREFIX:-pv3ux}"
 
+# Metric names as exposed by otelcol-observer's Prometheus endpoint (after relabeling)
+# These query the 'phoenix_observer_kpi_store' namespace and 'phoenix_pipeline_output_cardinality_estimate' metric name
+# with a 'phoenix_pipeline_label' to distinguish them.
+METRIC_FULL_TS_QUERY="${METRIC_FULL_TS_QUERY:-phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"full_fidelity\",job=\"otelcol-observer-metrics\"}}"
+METRIC_OPTIMISED_TS_QUERY="${METRIC_OPTIMISED_TS_QUERY:-phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"optimised\",job=\"otelcol-observer-metrics\"}}"
+METRIC_EXPERIMENTAL_TS_QUERY="${METRIC_EXPERIMENTAL_TS_QUERY:-phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"experimental\",job=\"otelcol-observer-metrics\"}}"
+
 # --- Logging ---
 log_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log_info() { echo "[$(log_ts)] [CTL] INFO: $*"; }

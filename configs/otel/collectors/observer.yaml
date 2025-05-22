@@ -62,9 +62,11 @@ extensions:
     endpoint: "0.0.0.0:1778"
   zpages:
     endpoint: "0.0.0.0:55680"
+  memory_ballast:
+    size_mib: ${OTEL_OBSERVER_MEMBALLAST_MIB_ENV:-64}
 
 service:
-  extensions: [health_check, pprof, zpages]
+  extensions: [health_check, pprof, zpages, memory_ballast]
   telemetry:
     metrics:
       address: ":9887"

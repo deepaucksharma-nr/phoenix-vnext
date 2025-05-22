@@ -1,115 +1,314 @@
 # Phoenix v3 Ultimate Process-Metrics Stack - Main OTel Collector Configuration
-# Simplified version for demo - focused on synthetic metrics
+# Revision 2025-05-22 · v3.0-final-uX
+
+config_sources:
+  ctlfile_optimization_mode:
+    path: ${CONTROL_SIGNALS_PATH_IN_CONTAINER:/etc/otelcol/control_signals/optimization_mode.yaml}
+    watch: true
+    reload_delay: 10s
 
 receivers:
+  hostmetrics/process_focus:
+    collection_interval: 15s
+    root_path: /hostfs
+    scrapers:
+      process:
+        metrics:
+          process.cpu.time: {enabled: true}
+          process.memory.usage: {enabled: true}
+          process.disk.io: {enabled: true}
+          process.threads: {enabled: true}
+          process.open_file_descriptors: {enabled: true}
+        mute_process_name_error: true
+        exclude_processes_regex:
+          - "^(kworker/.*|migration/.*|rcu_.*|ksoftirqd/.*)$"
+          - "^(systemd.*|dbus-daemon|accounts-daemon|packagekitd|rsyslogd|journald)$"
+          - "^(Xorg|gdm-.*|gnome-shell|gsd-.*|pulseaudio|pipewire.*|ibus-.*|evolution-.*)$"
+          - "^(atop|htop|stress-ng|otelcol.*|prometheus|grafana|control-loop-actuator|dockerd)$"
+          - "^(containerd-shim-runc-v2|runc|docker-proxy)$"
+          - "^(snapd|multipassd|ModemManager|NetworkManager|agetty|irqbalance)$"
+          - "^(anacron|cron|atd)$"
+        resource_attributes:
+          process.executable.name: {enabled: true}
+          process.command_line: {enabled: true}
+          process.owner: {enabled: true}
+          process.pid: {enabled: true}
+
   otlp:
     protocols:
-      http:
-        endpoint: "0.0.0.0:4318"
-      grpc:
-        endpoint: "0.0.0.0:4317"
+      http: {endpoint: "0.0.0.0:4318"}
 
 processors:
-  batch:
-    send_batch_size: 8192
-    timeout: 10s
+  # Common processors applied to all metrics first
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB_QUARTER:-512}
+    spike_limit_mib: 128
 
-  resourcedetection:
-    detectors: [system, env]
+  resourcedetection/common:
+    detectors: [env, system]
+    timeout: 2s
     system:
       hostname_sources: ["os"]
 
-  resource/full:
-    attributes:
-      - key: phoenix.pipeline.strategy
-        value: "full_fidelity"
-        action: upsert
+  transform/common_enrichment_and_profile_tagger:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["benchmark.id"], "${env:BENCHMARK_ID}")
+          - set(attributes["deployment.environment"], "${env:DEPLOYMENT_ENV}")
+          - set(attributes["phoenix.optimisation_profile"], GetPath(cfg("ctlfile_optimization_mode"), "optimization_profile", "conservative"))
+          - set(attributes["phoenix.control.correlation_id"], GetPath(cfg("ctlfile_optimization_mode"), "correlation_id", "unknown"))
 
-  resource/optimized:
-    attributes:
-      - key: phoenix.pipeline.strategy
-        value: "optimized"
-        action: upsert
+  transform/priority_classification_engine:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["phoenix.priority"], "critical") where IsString(attributes["process.executable.name"]) and IsMatch(attributes["process.executable.name"], ".*critical.*")
+          - set(attributes["phoenix.priority"], "high") where IsString(attributes["process.executable.name"]) and IsMatch(attributes["process.executable.name"], ".*(java_app|python_api|node_gateway).*") and attributes["phoenix.priority"] == nil
+          - set(attributes["phoenix.priority"], "medium") where IsString(attributes["process.executable.name"]) and IsMatch(attributes["process.executable.name"], ".*(nginx|postgres|data_pipeline).*") and attributes["phoenix.priority"] == nil
+          - set(attributes["phoenix.priority"], "low") where attributes["phoenix.priority"] == nil
 
-  resource/experimental:
-    attributes:
-      - key: phoenix.pipeline.strategy
-        value: "experimental"
-        action: upsert
+  cumulativetodelta:
+    metrics:
+      - process.cpu.time
 
-  # Cardinality reduction for optimized pipeline
-  transform/optimized:
+  transform/global_initial_attribute_stripping:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "process.parent_pid")
+
+  # Full Fidelity Pipeline Processors
+  resource/tag_pipeline_full:
+    attributes:
+      - {key: phoenix.pipeline.strategy, value: "full_fidelity", action: upsert}
+
+  transform/full_attribute_management:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "process.pid")
+
+  # Optimised Pipeline Processors
+  resource/tag_pipeline_optimised:
+    attributes:
+      - {key: phoenix.pipeline.strategy, value: "optimised", action: upsert}
+
+  filter/optimised_selection:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'resource.attributes["phoenix.priority"] == "critical"'
+        - 'resource.attributes["phoenix.priority"] == "high" and metric.data_points != nil'
+        - 'resource.attributes["phoenix.priority"] == "medium" and IsString(resource.attributes["process.executable.name"]) and IsMatch(resource.attributes["process.executable.name"], ".*(postgres|nginx).*")'
+
+  transform/optimised_rollup_prep:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["process.executable.name"], Concat([attributes["phoenix.priority"], "_others_optimised"], "")) where attributes["phoenix.priority"] == "medium" and not IsMatch(attributes["process.executable.name"], ".*(postgres|nginx).*")
+          - set(attributes["rollup.process.count"], 1) where IsMatch(attributes["process.executable.name"], ".*_others_optimised")
+
+  groupbyattrs/optimised_rollup:
+    keys: [host.name, service.name, "process.executable.name", "phoenix.pipeline.strategy", "phoenix.optimisation_profile", "phoenix.priority"]
+
+  transform/optimised_attribute_cleanup:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "process.command_line") where attributes["phoenix.priority"] != "critical"
+          - delete_key(attributes, "process.owner") where attributes["phoenix.priority"] == "low"
+          - delete_key(attributes, "container.id")
+
+  # Experimental Pipeline Processors
+  resource/tag_pipeline_experimental:
+    attributes:
+      - {key: phoenix.pipeline.strategy, value: "experimental_topk", action: upsert}
+
+  filter/experimental_aggressive_selection:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'resource.attributes["phoenix.priority"] == "critical"'
+        - 'resource.attributes["phoenix.priority"] == "high" and IsString(resource.attributes["process.executable.name"]) and IsMatch(resource.attributes["process.executable.name"], ".*(java_critical|postgres_primary).*")'
+
+  transform/experimental_rollup_marker:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["process.executable.name"], "phoenix.others.experimental_aggressive") where attributes["phoenix.priority"] != "critical"
+          - set(attributes["rollup.process.count"], 1) where attributes["process.executable.name"] == "phoenix.others.experimental_aggressive"
+
+  groupbyattrs/experimental_rollup:
+    keys: [host.name, service.name, "process.executable.name", "phoenix.pipeline.strategy", "phoenix.optimisation_profile"]
+
+  transform/experimental_attribute_cleanup:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["host.name", "service.name", "process.executable.name", "phoenix.pipeline.strategy", "phoenix.optimisation_profile", "phoenix.priority", "benchmark.id"])
+
+  # Cardinality counting transforms for observer monitoring
+  transform/cardinality_counter_full:
+    error_mode: ignore
     metric_statements:
       - context: metric
         statements:
-          - delete_key(attributes, "process_pid") where IsMatch(name, ".*cpu_time.*")
-          - delete_key(attributes, "process_command_line") where IsMatch(name, ".*cpu_time.*")
+          - set(name, "phoenix_full_output_ts_active") where name == "process.cpu.time"
+          - set(value, 1.0) where name == "phoenix_full_output_ts_active"
+          - set(aggregation_temporality, 1) where name == "phoenix_full_output_ts_active"
 
-  # Aggressive cardinality reduction for experimental pipeline  
-  transform/experimental:
+  transform/cardinality_counter_optimised:
+    error_mode: ignore
     metric_statements:
       - context: metric
         statements:
-          - delete_key(attributes, "process_pid")
-          - delete_key(attributes, "process_command_line")
-          - delete_key(attributes, "process_owner")
+          - set(name, "phoenix_optimised_output_ts_active") where name == "process.cpu.time"
+          - set(value, 1.0) where name == "phoenix_optimised_output_ts_active"
+          - set(aggregation_temporality, 1) where name == "phoenix_optimised_output_ts_active"
+
+  transform/cardinality_counter_experimental:
+    error_mode: ignore
+    metric_statements:
+      - context: metric
+        statements:
+          - set(name, "phoenix_experimental_output_ts_active") where name == "process.cpu.time"
+          - set(value, 1.0) where name == "phoenix_experimental_output_ts_active"
+          - set(aggregation_temporality, 1) where name == "phoenix_experimental_output_ts_active"
+
+  batch/final_export_batcher:
+    send_batch_size: 8192
+    timeout: 10s
+    send_batch_max_size: 16384
 
 exporters:
-  prometheus/full:
+  otlphttp/newrelic_full:
+    endpoint: '${env:NEW_RELIC_OTLP_ENDPOINT}'
+    headers: {"api-key": "${env:NEW_RELIC_LICENSE_KEY_FULL}"}
+    sending_queue: {enabled: true, queue_size: 2000, num_consumers: 3}
+    retry_on_failure: {enabled: true, initial_interval: 10s, max_interval: 90s, max_elapsed_time: 15m}
+    compression: gzip
+
+  otlphttp/newrelic_optimised:
+    endpoint: '${env:NEW_RELIC_OTLP_ENDPOINT}'
+    headers: {"api-key": "${env:NEW_RELIC_LICENSE_KEY_OPTIMISED}"}
+    sending_queue: {enabled: true, queue_size: 2000, num_consumers: 3}
+    retry_on_failure: {enabled: true, initial_interval: 5s, max_interval: 60s, max_elapsed_time: 10m}
+    compression: gzip
+
+  otlphttp/newrelic_experimental:
+    endpoint: '${env:NEW_RELIC_OTLP_ENDPOINT}'
+    headers: {"api-key": "${env:NEW_RELIC_LICENSE_KEY_EXPERIMENTAL}"}
+    sending_queue: {enabled: true, queue_size: 1000, num_consumers: 2}
+    retry_on_failure: {enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 5m}
+    compression: gzip
+
+  logging/debug_sampled:
+    loglevel: info
+    verbosity: basic
+    sampling_initial: 2
+    sampling_thereafter: 1000
+
+  prometheus/output_full:
     endpoint: "0.0.0.0:8888"
     namespace: "phoenix_full_final_output"
-    resource_to_telemetry_conversion:
-      enabled: true
+    resource_to_telemetry_conversion: {enabled: true}
     send_timestamps: true
+    metric_expiration: 5m
+    enable_open_metrics: true
 
-  prometheus/optimized:
+  prometheus/output_optimised:
     endpoint: "0.0.0.0:8889"
     namespace: "phoenix_opt_final_output"
-    resource_to_telemetry_conversion:
-      enabled: true
+    resource_to_telemetry_conversion: {enabled: true}
     send_timestamps: true
+    metric_expiration: 5m
+    enable_open_metrics: true
 
-  prometheus/experimental:
+  prometheus/output_experimental:
     endpoint: "0.0.0.0:8890"
     namespace: "phoenix_exp_final_output"
-    resource_to_telemetry_conversion:
-      enabled: true
+    resource_to_telemetry_conversion: {enabled: true}
     send_timestamps: true
+    metric_expiration: 5m
+    enable_open_metrics: true
 
-  logging:
-    verbosity: basic
+connectors:
+  routing/fanout_to_pipelines:
+    default_pipelines: []
+    table:
+      - statement: 'true'
+        pipelines:
+          - metrics/pipeline_full_fidelity
+          - metrics/pipeline_optimised
+          - metrics/pipeline_experimental_topk
 
 extensions:
-  health_check:
-    endpoint: "0.0.0.0:13133"
-  pprof:
-    endpoint: "0.0.0.0:1777"
-  zpages:
-    endpoint: "0.0.0.0:55679"
+  health_check: { endpoint: "0.0.0.0:13133" }
+  pprof: { endpoint: "0.0.0.0:1777" }
+  zpages: { endpoint: "0.0.0.0:55679" }
   memory_ballast:
-    size_mib: 640
+    size_mib: ${OTELCOL_MAIN_MEMBALLAST_MIB:-256}
 
 service:
   extensions: [health_check, pprof, zpages, memory_ballast]
   telemetry:
-    metrics:
-      address: ":8887"
-      level: detailed
-    logs:
-      level: info
+    metrics: {address: ":8888", level: detailed}
+    logs: {level: info, development: false, encoding: json, sampling: {initial: 5, thereafter: 200}}
 
   pipelines:
-    metrics/full:
-      receivers: [otlp]
-      processors: [resourcedetection, resource/full, batch]
-      exporters: [prometheus/full, logging]
+    metrics/common_intake:
+      receivers: [hostmetrics/process_focus, otlp]
+      processors:
+        - memory_limiter
+        - resourcedetection/common
+        - transform/common_enrichment_and_profile_tagger
+        - cumulativetodelta
+        - transform/priority_classification_engine
+        - transform/global_initial_attribute_stripping
+      exporters: [routing/fanout_to_pipelines]
 
-    metrics/optimized:
-      receivers: [otlp]
-      processors: [resourcedetection, resource/optimized, transform/optimized, batch]
-      exporters: [prometheus/optimized]
+    metrics/pipeline_full_fidelity:
+      receivers: [routing/fanout_to_pipelines]
+      processors:
+        - memory_limiter
+        - resource/tag_pipeline_full
+        - transform/full_attribute_management
+        - transform/cardinality_counter_full
+        - batch/final_export_batcher
+      exporters: [prometheus/output_full, otlphttp/newrelic_full, logging/debug_sampled]
 
-    metrics/experimental:
-      receivers: [otlp]
-      processors: [resourcedetection, resource/experimental, transform/experimental, batch]
-      exporters: [prometheus/experimental]
+    metrics/pipeline_optimised:
+      receivers: [routing/fanout_to_pipelines]
+      processors:
+        - memory_limiter
+        - resource/tag_pipeline_optimised
+        - filter/optimised_selection
+        - transform/optimised_rollup_prep
+        - groupbyattrs/optimised_rollup
+        - transform/optimised_attribute_cleanup
+        - transform/cardinality_counter_optimised
+        - batch/final_export_batcher
+      exporters: [prometheus/output_optimised, otlphttp/newrelic_optimised, logging/debug_sampled]
+
+    metrics/pipeline_experimental_topk:
+      receivers: [routing/fanout_to_pipelines]
+      processors:
+        - memory_limiter
+        - resource/tag_pipeline_experimental
+        - filter/experimental_aggressive_selection
+        - transform/experimental_rollup_marker
+        - groupbyattrs/experimental_rollup
+        - transform/experimental_attribute_cleanup
+        - transform/cardinality_counter_experimental
+        - batch/final_export_batcher
+      exporters: [prometheus/output_experimental, otlphttp/newrelic_experimental, logging/debug_sampled]

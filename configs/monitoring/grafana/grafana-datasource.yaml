@@ -8,7 +8,7 @@ datasources:
     access: proxy # Grafana backend proxies requests to Prometheus (recommended)
     url: http://prometheus:9090 # Internal Docker network DNS name for Prometheus service
     isDefault: true # Make this the default datasource for new panels
-    uid: prometheus_phoenix_v3_ultra # Explicit UID for robust dashboard linking
+    uid: prometheus_phoenix_v3 # Explicit UID for robust dashboard linking
     jsonData:
       timeInterval: "15s" # Default scrape interval to suggest in Explore view
       # Optional: HTTP method for queries (default is GET)

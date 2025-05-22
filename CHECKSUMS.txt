@@ -1,0 +1,3 @@
+93fea270fa9d1131483bf9b225fabddf16eef961a80093ceafda2288224b2aa7  configs/otel/collectors/main.yaml
+b02bc5bbb2f87d33eb83f6c929e9cdc078ecc3f2fee00426b2f310c81554e51a  configs/otel/collectors/observer.yaml
+b6fd1923f4f05a374bbaf5a9d1cc47d477f72b1243e7abb17d2e2ad92fa7247c  configs/control/optimization_mode_template.yaml

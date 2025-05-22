@@ -1,81 +1,128 @@
-# Phoenix v3 Ultimate Process-Metrics Stack - Observer OTel Collector Configuration
-# Simplified version for demo
+# Phoenix v3 Ultimate Stack - Observer OTel Collector Configuration
+# Revision 2025-05-22 · v3.0-final-uX
+# Role: Scrapes cardinality estimates & other KPIs from otelcol-main's pipeline outputs.
+#       Exposes these aggregated/processed KPIs via its own Prometheus endpoint.
+#       The external `update-control-file.sh` script queries this observer's endpoint.
 
 receivers:
-  prometheus:
+  prometheus/main_pipeline_kpis:
     config:
       scrape_configs:
-        - job_name: 'otelcol-main-metrics'
+        - job_name: 'otelcol-main-full-output-kpis'
           scrape_interval: 15s
-          static_configs:
-            - targets: ['otelcol-main:8888']
-          relabel_configs:
-            - source_labels: []
-              target_label: phoenix_pipeline_label
+          static_configs: [{targets: ['otelcol-main:8888']}]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: '^phoenix_full_final_output_.*'
+              action: keep
+            - source_labels: [job]
+              target_label: "source_job"
+              action: replace
+            - target_label: "phoenix_pipeline_label"
               replacement: "full_fidelity"
-        - job_name: 'otelcol-main-optimized'
+            - source_labels: [__name__]
+              regex: 'phoenix_full_final_output_(.*)'
+              replacement: 'phoenix_pipeline_output_cardinality_estimate'
+              target_label: "__name__"
+
+        - job_name: 'otelcol-main-opt-output-kpis'
           scrape_interval: 15s
-          static_configs:
-            - targets: ['otelcol-main:8889']
-          relabel_configs:
-            - source_labels: []
-              target_label: phoenix_pipeline_label
+          static_configs: [{targets: ['otelcol-main:8889']}]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: '^phoenix_opt_final_output_.*'
+              action: keep
+            - source_labels: [job]
+              target_label: "source_job"
+              action: replace
+            - target_label: "phoenix_pipeline_label"
               replacement: "optimised"
-        - job_name: 'otelcol-main-experimental'
+            - source_labels: [__name__]
+              regex: 'phoenix_opt_final_output_(.*)'
+              replacement: 'phoenix_pipeline_output_cardinality_estimate'
+              target_label: "__name__"
+
+        - job_name: 'otelcol-main-exp-output-kpis'
           scrape_interval: 15s
-          static_configs:
-            - targets: ['otelcol-main:8890']
-          relabel_configs:
-            - source_labels: []
-              target_label: phoenix_pipeline_label
+          static_configs: [{targets: ['otelcol-main:8890']}]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: '^phoenix_exp_final_output_.*'
+              action: keep
+            - source_labels: [job]
+              target_label: "source_job"
+              action: replace
+            - target_label: "phoenix_pipeline_label"
               replacement: "experimental"
+            - source_labels: [__name__]
+              regex: 'phoenix_exp_final_output_(.*)'
+              replacement: 'phoenix_pipeline_output_cardinality_estimate'
+              target_label: "__name__"
+
+        - job_name: 'otelcol-main-control-signal-metrics'
+          scrape_interval: 15s
+          static_configs: [{targets: ['otelcol-main:8888']}]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'phoenix_main_applied_control_.*'
+              action: keep
+            - source_labels: [__name__]
+              target_label: "original_metric_name"
+              replacement: "phoenix.main.applied_control_config_version"
 
 processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 204
+    spike_limit_mib: 64
+
+  resourcedetection/observer:
+    detectors: [env]
+    timeout: 2s
+
+  resource/observer_tags:
+    attributes:
+      - {key: service.name, value: "phoenix-v3-observer-service", action: upsert}
+      - {key: benchmark.id, value: "${env:BENCHMARK_ID}", action: upsert}
+      - {key: component.type, value: "observer_collector", action: upsert}
+
   batch:
-    send_batch_size: 1024
+    send_batch_size: 256
     timeout: 5s
-
-  resourcedetection:
-    detectors: [system, env]
-
-  transform:
-    metric_statements:
-      - context: metric
-        statements:
-          - set(name, "phoenix_pipeline_output_cardinality_estimate") where name matches "phoenix_.*_output_ts_active"
 
 exporters:
   prometheus:
     endpoint: "0.0.0.0:9888"
     namespace: "phoenix_observer_kpi_store"
-    resource_to_telemetry_conversion:
-      enabled: true
+    resource_to_telemetry_conversion: {enabled: true}
     send_timestamps: true
+    metric_expiration: 2m
 
-  logging:
-    verbosity: basic
+  logging/observer_kpi_log_sampled:
+    loglevel: info
+    verbosity: normal
+    sampling_initial: 2
+    sampling_thereafter: 20
 
 extensions:
-  health_check:
-    endpoint: "0.0.0.0:13134"
-  pprof:
-    endpoint: "0.0.0.0:1778"
-  zpages:
-    endpoint: "0.0.0.0:55680"
+  health_check: { endpoint: "0.0.0.0:13133" }
+  pprof: { endpoint: "0.0.0.0:1777" }
+  zpages: { endpoint: "0.0.0.0:55679" }
   memory_ballast:
-    size_mib: ${OTEL_OBSERVER_MEMBALLAST_MIB_ENV:-64}
+    size_mib: ${OTELCOL_OBSERVER_MEMBALLAST_MIB:-64}
 
 service:
   extensions: [health_check, pprof, zpages, memory_ballast]
   telemetry:
-    metrics:
-      address: ":9887"
-      level: detailed
-    logs:
-      level: info
+    metrics: {address: ":9888"}
+    logs: {level: info, sampling: {initial: 10, thereafter: 1000}}
 
   pipelines:
-    metrics:
-      receivers: [prometheus]
-      processors: [resourcedetection, transform, batch]
-      exporters: [prometheus, logging]
+    metrics/kpi_processing_and_exposure:
+      receivers: [prometheus/main_pipeline_kpis]
+      processors:
+        - memory_limiter
+        - resourcedetection/observer
+        - resource/observer_tags
+        - batch
+      exporters: [prometheus, logging/observer_kpi_log_sampled]

@@ -185,6 +185,38 @@ processors:
           - set(value, 1.0) where name == "phoenix_experimental_output_ts_active"
           - set(aggregation_temporality, 1) where name == "phoenix_experimental_output_ts_active"
 
+  # Cardinality Observatory Processors
+  transform/cardinality_analysis:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["cardinality.dimensions"], ConvertCase(attributes["host.name"], "lower")) where IsString(attributes["host.name"])
+          - set(attributes["cardinality.growth.rate"], "moderate") where attributes["phoenix.priority"] == "medium"
+          - set(attributes["cardinality.growth.rate"], "high") where attributes["phoenix.priority"] == "high" or attributes["phoenix.priority"] == "critical"
+          - set(attributes["cardinality.growth.rate"], "low") where attributes["phoenix.priority"] == "low"
+          - set(attributes["cardinality.explosion.risk"], 0.2) where attributes["cardinality.growth.rate"] == "low"
+          - set(attributes["cardinality.explosion.risk"], 0.5) where attributes["cardinality.growth.rate"] == "moderate"
+          - set(attributes["cardinality.explosion.risk"], 0.7) where attributes["cardinality.growth.rate"] == "high"
+          - set(attributes["cardinality.explosion.risk"], 0.9) where attributes["phoenix.priority"] == "critical" and IsMatch(attributes["process.executable.name"], ".*java.*")
+
+  filter/cardinality_explosion_alert:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'resource.attributes["cardinality.explosion.risk"] != nil and resource.attributes["cardinality.explosion.risk"] > 0.8'
+
+  transform/cardinality_alert_enrichment:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["alert.type"], "cardinality_explosion")
+          - set(attributes["alert.severity"], "critical") where attributes["cardinality.explosion.risk"] > 0.9
+          - set(attributes["alert.severity"], "warning") where attributes["cardinality.explosion.risk"] > 0.8 and attributes["cardinality.explosion.risk"] <= 0.9
+          - set(attributes["auto_remediate"], true) where attributes["alert.severity"] == "critical"
+          - set(attributes["auto_remediate"], false) where attributes["alert.severity"] == "warning"
+
   batch/final_export_batcher:
     send_batch_size: 8192
     timeout: 10s
@@ -242,6 +274,14 @@ exporters:
     metric_expiration: 5m
     enable_open_metrics: true
 
+  prometheus/cardinality_observatory:
+    endpoint: "0.0.0.0:8891"
+    namespace: "phoenix_cardinality_observatory"
+    resource_to_telemetry_conversion: {enabled: true}
+    send_timestamps: true
+    metric_expiration: 10m
+    enable_open_metrics: true
+
 connectors:
   routing/fanout_to_pipelines:
     default_pipelines: []
@@ -251,6 +291,7 @@ connectors:
           - metrics/pipeline_full_fidelity
           - metrics/pipeline_optimised
           - metrics/pipeline_experimental_topk
+          - metrics/cardinality_observatory
 
 extensions:
   health_check: { endpoint: "0.0.0.0:13133" }
@@ -312,3 +353,13 @@ service:
         - transform/cardinality_counter_experimental
         - batch/final_export_batcher
       exporters: [prometheus/output_experimental, otlphttp/newrelic_experimental, logging/debug_sampled]
+
+    metrics/cardinality_observatory:
+      receivers: [routing/fanout_to_pipelines]
+      processors:
+        - memory_limiter
+        - transform/cardinality_analysis
+        - filter/cardinality_explosion_alert
+        - transform/cardinality_alert_enrichment
+        - batch/final_export_batcher
+      exporters: [prometheus/cardinality_observatory, logging/debug_sampled]

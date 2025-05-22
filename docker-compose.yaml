@@ -20,6 +20,7 @@ services:
       - "8888:8888"   # Prometheus: Full pipeline output AND collector's own telemetry
       - "8889:8889"   # Prometheus: Optimised pipeline output
       - "8890:8890"   # Prometheus: Experimental pipeline output
+      - "8891:8891"   # Prometheus: Cardinality observatory output
       - "13133:13133" # health_check
       - "1777:1777"   # pprof (as per spec)
       - "55679:55679" # zpages (as per spec)
@@ -157,6 +158,40 @@ services:
     deploy:
       resources:
         limits: { cpus: '0.5', memory: '512M' }
+
+  ### Prometheus Pushgateway for synthetic metrics ###
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: phoenix-pushgateway
+    ports:
+      - "9091:9091"
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=9091"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9091/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  ### Metric Generator Service ###
+  metric-generator:
+    image: alpine:latest
+    container_name: phoenix-metric-generator
+    volumes:
+      - ./scripts/phoenix-metric-generator.sh:/app/metric-generator.sh:ro
+    environment:
+      - PROMETHEUS_PUSHGATEWAY=http://pushgateway:9091
+    command: |
+      sh -c "
+        apk add --no-cache bash curl bc &&
+        chmod +x /app/metric-generator.sh &&
+        /app/metric-generator.sh
+      "
+    depends_on:
+      pushgateway: {condition: service_healthy}
+    restart: unless-stopped
 
 volumes:
   prometheus_data:

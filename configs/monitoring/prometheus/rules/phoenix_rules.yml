@@ -1,0 +1,248 @@
+# Phoenix v3 - Prometheus Recording Rules
+# Save this as prometheus-rules.yml and include in your Prometheus config
+
+groups:
+  - name: phoenix_pipeline_analysis
+    interval: 15s
+    rules:
+      # Signal preservation score calculation
+      - record: phoenix_signal_preservation_score
+        expr: |
+          (
+            count by (phoenix_pipeline_strategy) (
+              count by (process_executable_name, phoenix_pipeline_strategy) (
+                phoenix_opt_final_output_process_cpu_time_total
+              )
+            ) / 
+            count (
+              count by (process_executable_name) (
+                phoenix_full_final_output_process_cpu_time_total
+              )
+            )
+          ) * 100
+          or
+          (
+            count by (phoenix_pipeline_strategy) (
+              count by (process_executable_name, phoenix_pipeline_strategy) (
+                phoenix_exp_final_output_process_cpu_time_total
+              )
+            ) / 
+            count (
+              count by (process_executable_name) (
+                phoenix_full_final_output_process_cpu_time_total
+              )
+            )
+          ) * 100
+          or
+          vector(100) * on() group_left(phoenix_pipeline_strategy) 
+          (
+            max by (phoenix_pipeline_strategy) (
+              phoenix_full_final_output_process_cpu_time_total{phoenix_pipeline_strategy="full_fidelity"} * 0 + 1
+            )
+          )
+        labels:
+          pipeline: '{{ phoenix_pipeline_strategy }}'
+
+      # Attribute presence matrix
+      - record: phoenix_attribute_presence_matrix
+        expr: |
+          # Check for process.command_line presence
+          (
+            count by (phoenix_pipeline_strategy) (
+              phoenix_full_final_output_process_cpu_time_total{process_command_line!=""}
+            ) > 0
+          ) * 1 + on() group_left(attribute) (vector(0) * on() group_left() (max(up{job="otelcol-main-full-output"}) * 0 + 1))
+          or
+          (
+            count by (phoenix_pipeline_strategy) (
+              phoenix_opt_final_output_process_cpu_time_total{process_command_line!=""}
+            ) > 0
+          ) * 1
+          or
+          (
+            count by (phoenix_pipeline_strategy) (
+              phoenix_exp_final_output_process_cpu_time_total{process_command_line!=""}
+            ) > 0
+          ) * 1
+        labels:
+          attribute: "process.command_line"
+
+      # Pipeline processor configuration (static mapping)
+      - record: phoenix_pipeline_processor_config
+        expr: |
+          vector(1)
+        labels:
+          processor: "memory_limiter"
+          full_fidelity: "✓"
+          optimised: "✓"
+          experimental: "✓"
+          purpose: "Prevent OOM"
+
+      - record: phoenix_pipeline_processor_config
+        expr: |
+          vector(1)
+        labels:
+          processor: "resourcedetection"
+          full_fidelity: "✓"
+          optimised: "✓"
+          experimental: "✓"
+          purpose: "Add host metadata"
+
+      - record: phoenix_pipeline_processor_config
+        expr: |
+          vector(1)
+        labels:
+          processor: "filter"
+          full_fidelity: "✗"
+          optimised: "✓"
+          experimental: "✓"
+          purpose: "Priority-based selection"
+
+      - record: phoenix_pipeline_processor_config
+        expr: |
+          vector(1)
+        labels:
+          processor: "groupbyattrs"
+          full_fidelity: "✗"
+          optimised: "✓"
+          experimental: "✓"
+          purpose: "Consolidate metrics"
+
+      - record: phoenix_pipeline_processor_config
+        expr: |
+          vector(1)
+        labels:
+          processor: "transform/cleanup"
+          full_fidelity: "Minimal"
+          optimised: "Moderate"
+          experimental: "Aggressive"
+          purpose: "Remove attributes"
+
+      # GroupBy configuration
+      - record: phoenix_groupby_configuration
+        expr: |
+          vector(6)
+        labels:
+          pipeline: "optimised"
+          groupby_keys: "host.name, service.name, process.executable.name, phoenix.pipeline.strategy, phoenix.optimisation_profile, phoenix.priority"
+          key_count: "6"
+
+      - record: phoenix_groupby_configuration
+        expr: |
+          vector(5)
+        labels:
+          pipeline: "experimental"
+          groupby_keys: "host.name, service.name, process.executable.name, phoenix.pipeline.strategy, phoenix.optimisation_profile"
+          key_count: "5"
+
+      # Export configuration
+      - record: phoenix_export_configuration
+        expr: |
+          vector(1)
+        labels:
+          setting: "Queue Size"
+          full_fidelity: "2000"
+          optimised: "2000"
+          experimental: "1000"
+
+      - record: phoenix_export_configuration
+        expr: |
+          vector(1)
+        labels:
+          setting: "Retry Max Time"
+          full_fidelity: "15m"
+          optimised: "10m"
+          experimental: "5m"
+
+      - record: phoenix_export_configuration
+        expr: |
+          vector(1)
+        labels:
+          setting: "Compression"
+          full_fidelity: "gzip"
+          optimised: "gzip"
+          experimental: "gzip"
+
+      # Rollup effectiveness metrics
+      - record: phoenix_rollup_reduction_ratio
+        expr: |
+          1 - (
+            count by (phoenix_pipeline_strategy) (
+              sum by (process_executable_name, host_name, phoenix_pipeline_strategy) (
+                rate(phoenix_opt_final_output_process_cpu_time_total[1m])
+              )
+            ) /
+            count (
+              sum by (process_executable_name, host_name) (
+                rate(phoenix_full_final_output_process_cpu_time_total[1m])
+              )
+            )
+          )
+
+      # Processing volume by stage
+      - record: phoenix_stage_metrics_count
+        expr: |
+          sum by (pipeline, stage) (
+            label_replace(
+              rate(otelcol_processor_processed_metric_points_total[1m]) * 60,
+              "pipeline", "$1", "processor", ".*_(full_fidelity|optimised|experimental).*"
+            )
+          )
+
+  - name: phoenix_synthetic_metrics
+    interval: 30s
+    rules:
+      # Generate synthetic optimization state timeline
+      - record: phoenix_optimization_state_timeline
+        expr: |
+          (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", optimisation_profile="conservative"} * 0)
+          or
+          (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", optimisation_profile="balanced"} * 1)
+          or
+          (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", optimisation_profile="aggressive"} * 2)
+          or
+          (phoenix_observer_kpi_store_control_file_info{field="optimisation_profile", optimisation_profile="emergency"} * 3)
+
+      # ML anomaly scores (simplified calculation)
+      - record: phoenix_ml_anomaly_score
+        expr: |
+          clamp_max(
+            abs(
+              (rate(phoenix_opt_final_output_process_cpu_time_total[5m]) - 
+               avg_over_time(rate(phoenix_opt_final_output_process_cpu_time_total[5m])[30m:1m])) /
+              (stddev_over_time(rate(phoenix_opt_final_output_process_cpu_time_total[5m])[30m:1m]) + 0.001)
+            ) / 3,
+            1
+          )
+
+      # Cardinality predictions
+      - record: phoenix_ml_cardinality_prediction
+        expr: |
+          predict_linear(
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate[30m], 
+            300
+          )
+
+      # Prediction confidence bands
+      - record: phoenix_ml_prediction_confidence_upper
+        expr: |
+          stddev_over_time(
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate[30m]
+          ) * 2
+
+      - record: phoenix_ml_prediction_confidence_lower
+        expr: |
+          stddev_over_time(
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate[30m]
+          ) * 2
+
+  - name: phoenix_cost_metrics
+    interval: 30s
+    rules:
+      # Cost reduction ratio calculation
+      - record: phoenix:cost_reduction_ratio
+        expr: |
+          1 - (
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="optimised"} /
+            phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label="full_fidelity"}
+          )

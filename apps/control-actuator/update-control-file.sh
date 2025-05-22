@@ -52,6 +52,10 @@ METRIC_FULL_TS_QUERY="${METRIC_FULL_TS_QUERY:-phoenix_observer_kpi_store_phoenix
 METRIC_OPTIMISED_TS_QUERY="${METRIC_OPTIMISED_TS_QUERY:-phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"optimised\",job=\"otelcol-observer-metrics\"}}"
 METRIC_EXPERIMENTAL_TS_QUERY="${METRIC_EXPERIMENTAL_TS_QUERY:-phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate{phoenix_pipeline_label=\"experimental\",job=\"otelcol-observer-metrics\"}}"
 
+# Cardinality explosion alert queries
+METRIC_CARDINALITY_EXPLOSION_ALERT="${METRIC_CARDINALITY_EXPLOSION_ALERT:-phoenix_observer_kpi_store_phoenix_cardinality_explosion_alert_count{job=\"otelcol-observer-metrics\"}}"
+METRIC_CARDINALITY_RISK_QUERY="${METRIC_CARDINALITY_RISK_QUERY:-phoenix_observer_kpi_store_phoenix_cardinality_alert_process_cpu_time{alert_type=\"cardinality_explosion\",job=\"otelcol-observer-metrics\"}}"
+
 # --- Logging ---
 log_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log_info() { echo "[$(log_ts)] [CTL] INFO: $*"; }
@@ -199,7 +203,13 @@ fi
 CURRENT_FULL_TS=$(query_prometheus_value "$METRIC_FULL_TS_QUERY" "$PREV_FULL_TS_FROM_FILE")
 CURRENT_OPTIMISED_TS=$(query_prometheus_value "$METRIC_OPTIMISED_TS_QUERY" "$PREV_OPTIMISED_TS_FROM_FILE")
 CURRENT_EXPERIMENTAL_TS=$(query_prometheus_value "$METRIC_EXPERIMENTAL_TS_QUERY" "$PREV_EXPERIMENTAL_TS_FROM_FILE")
+
+# 2a. Check for cardinality explosion alerts
+CARDINALITY_EXPLOSION_COUNT=$(query_prometheus_value "$METRIC_CARDINALITY_EXPLOSION_ALERT" "0")
+CARDINALITY_RISK_PROCESSES=$(query_prometheus_value "$METRIC_CARDINALITY_RISK_QUERY" "0")
+
 log_info "Current KPIs - Full_TS: $CURRENT_FULL_TS, Optimised_TS: $CURRENT_OPTIMISED_TS, Experimental_TS: $CURRENT_EXPERIMENTAL_TS"
+log_info "Cardinality Alert Status - Explosion Alerts: $CARDINALITY_EXPLOSION_COUNT, High-Risk Processes: $CARDINALITY_RISK_PROCESSES"
 
 # 3. Calculate Cost Reduction Ratio (Optimised vs Full)
 CURRENT_COST_REDUCTION_RATIO="0.0"
@@ -212,9 +222,23 @@ if [[ "$CURRENT_FULL_TS" =~ ^[0-9]+(\.[0-9]+)?$ && $(echo "$CURRENT_FULL_TS > 0"
 fi
 log_info "Current Cost Reduction Ratio (Opt vs Full): $CURRENT_COST_REDUCTION_RATIO"
 
-# 4. PID-lite logic with hysteresis for stable transitions
+# 4. PID-lite logic with cardinality explosion override and hysteresis for stable transitions
 PROPOSED_PROFILE=""
 TRIGGER_REASON_TEXT=""
+
+# Check for cardinality explosion emergency override
+if [[ "$CARDINALITY_EXPLOSION_COUNT" -gt 0 ]]; then
+  PROPOSED_PROFILE="aggressive"
+  TRIGGER_REASON_TEXT="EMERGENCY: Cardinality explosion detected ($CARDINALITY_EXPLOSION_COUNT alerts). Auto-remediation triggered."
+  log_warn "$TRIGGER_REASON_TEXT"
+elif [[ "$CARDINALITY_RISK_PROCESSES" -gt 10 ]]; then
+  PROPOSED_PROFILE="aggressive" 
+  TRIGGER_REASON_TEXT="HIGH_RISK: Multiple high-risk cardinality processes detected ($CARDINALITY_RISK_PROCESSES). Preventive aggressive optimization."
+  log_warn "$TRIGGER_REASON_TEXT"
+fi
+
+# If no cardinality emergency, use normal PID-lite logic
+if [[ -z "$PROPOSED_PROFILE" ]]; then
 
 # Ensure thresholds are treated as numbers by bc
 CONSERVATIVE_MAX_TS_NUM=$(echo "$CONSERVATIVE_MAX_TS_THRESHOLD" | bc)
@@ -269,6 +293,8 @@ else # balanced profile
         TRIGGER_REASON_TEXT="Optimised TS ($CURRENT_OPTIMISED_TS_NUM) in balanced range [$CONSERVATIVE_MAX_TS_NUM - $AGGRESSIVE_MIN_TS_NUM]"
     fi
 fi
+
+fi # End of normal PID-lite logic block
 
 log_info "Proposed Profile based on Optimised TS: $PROPOSED_PROFILE. Reason: $TRIGGER_REASON_TEXT"
 log_info "Hysteresis factor: $HYSTERESIS_FACTOR_NUM, Conservative Max with hysteresis: $CONSERVATIVE_MAX_WITH_HYSTERESIS, Aggressive Min with hysteresis: $AGGRESSIVE_MIN_WITH_HYSTERESIS"
@@ -356,6 +382,8 @@ yq eval ".optimization_profile = \"$EFFECTIVE_PROFILE\" | \
          .current_metrics.optimized_ts = $(echo "$CURRENT_OPTIMISED_TS" | bc) | \
          .current_metrics.experimental_ts = $(echo "$CURRENT_EXPERIMENTAL_TS" | bc) | \
          .current_metrics.cost_reduction_ratio = $(echo "$CURRENT_COST_REDUCTION_RATIO" | bc) | \
+         .current_metrics.cardinality_explosion_alerts = $(echo "$CARDINALITY_EXPLOSION_COUNT" | bc) | \
+         .current_metrics.cardinality_risk_processes = $(echo "$CARDINALITY_RISK_PROCESSES" | bc) | \
          .thresholds.conservative_max_ts = $(echo "$CONSERVATIVE_MAX_TS_THRESHOLD" | bc) | \
          .thresholds.aggressive_min_ts = $(echo "$AGGRESSIVE_MIN_TS_THRESHOLD" | bc) | \
          .pipelines.experimental_enabled = $EXPERIMENTAL_PIPELINE_ENABLED | \

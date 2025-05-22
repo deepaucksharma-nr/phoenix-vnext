@@ -16,25 +16,29 @@ The system implements a 3-pipeline architecture for different cardinality optimi
 phoenix-vnext/
 ├── README.md                          # This file
 ├── docker-compose.yaml               # Main orchestration
-├── .env.template                      # Environment template
-├── .env                              # Local environment (gitignored)
+├── CLAUDE.md                          # Claude Code guidance
+├── .gitignore                         # Git ignore patterns
 │
 ├── apps/                             # Application services
 │   ├── synthetic-generator/          # Go-based metrics generator
 │   └── control-actuator/             # Control plane actuator script
 │
 ├── configs/
-│   ├── otel/                         # OpenTelemetry configurations
-│   │   ├── collectors/               # Main and observer collector configs
-│   │   └── processors/               # Processor configurations
+│   ├── otel/collectors/              # OpenTelemetry collector configurations
+│   │   ├── main.yaml                 # Main collector (3 pipelines)
+│   │   └── observer.yaml             # Observer collector
 │   ├── monitoring/
 │   │   ├── prometheus/               # Prometheus configs and rules
 │   │   └── grafana/                  # Grafana datasources and dashboards
 │   └── control/                      # Control plane configurations
 │
-├── scripts/                          # Operational scripts
-├── data/                            # Persistent data (gitignored)
-└── docs/                           # Documentation
+├── docs/                             # Core documentation
+│   ├── README.md                     # Documentation index
+│   ├── ARCHITECTURE.md               # System design
+│   └── TROUBLESHOOTING.md            # Problem resolution
+│
+├── scripts/                          # Environment initialization
+└── data/                             # Runtime data (gitignored)
 ```
 
 ## 🚀 Quick Start

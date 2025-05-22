@@ -1,95 +1,59 @@
-version: "3.9"
-
 services:
-  ### Workload Generators: Provide diverse, sustained load ###
-  stress-ng-cpu-heavy:
-    image: polinux/stress-ng:0.17.05
-    command: >
-      stress-ng --cpu 0 --cpu-load 75 --cpu-method all 
-      --matrix 0 --matrix-size 128 --matrix-ops 100000
-      --mq 0 --mq-ops 50000
-      --process-name-prefix cpu_loadgen_
-      --timeout 0s 
-    pid: host
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits: { cpus: '2.0', memory: '1G' }
-
-  stress-ng-io-heavy:
-    image: polinux/stress-ng:0.17.05
-    command: >
-      stress-ng --io 0 --io-ops 20000 
-      --hdd 0 --hdd-bytes 256M --hdd-ops 2500
-      --process-name-prefix io_loadgen_
-      --timeout 0s
-    pid: host
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits: { cpus: '1.0', memory: '512M' }
-
   ### Main OpenTelemetry Collector (Phoenix Simulation) ###
   otelcol-main:
-    image: otel/opentelemetry-collector-contrib:0.103.1
-    command: ["--config=/etc/otelcol/config.yaml"]
-    pid: host
-    env_file: .env
+    image: otel/opentelemetry-collector-contrib:0.103.1 # Consistent version
+    command: ["--config=/etc/otelcol/config.yaml"] # Simplified command, config name matches volume
+    pid: host # As per spec, for hostmetrics.process to see all processes.
+    env_file: .env # Loads all variables from .env file
     environment:
       CONTROL_SIGNALS_PATH_IN_CONTAINER: /etc/otelcol/control_signals/optimization_mode.yaml
-      OTELCOL_MAIN_MEMBALLAST_MIB: ${OTELCOL_MAIN_MEMBALLAST_MIB:-256}
-      GOMAXPROCS: ${OTELCOL_MAIN_GOMAXPROCS:-1}
-      GOMEMLIMIT: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-1024}MiB
+      GOMAXPROCS: ${OTELCOL_MAIN_GOMAXPROCS:-4}
+      GOMEMLIMIT: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-2560MiB}
     volumes:
       - ./configs/otel/collectors/main.yaml:/etc/otelcol/config.yaml:ro
-      - ./configs/control:/etc/otelcol/control_signals:ro
-      - ./configs/otel/processors:/etc/otelcol/processors:ro
-      - /proc:/hostfs/proc:ro
-      - /sys:/hostfs/sys:ro
-      - /etc/hostname:/hostfs/etc/hostname:ro
-      - ./data/otelcol_main:/var/lib/otelcol/file_storage
+      - ./configs/control:/etc/otelcol/control_signals:ro # Phoenix control signals
+      - ./configs/otel/processors:/etc/otelcol/processors:ro # Phoenix processor configs
+      - /proc:/hostfs/proc:ro # Standard mount for host /proc
+      - /sys:/hostfs/sys:ro   # Standard mount for host /sys
+      - /etc/hostname:/hostfs/etc/hostname:ro # For host.name detection by resourcedetection
+      - ./data/otelcol_main:/var/lib/otelcol/file_storage # For file_storage extension (e.g., persistent queue)
     ports:
-      - "4318:4318"   # OTLP/HTTP ingest
-      - "8888:8888"   # Prometheus: Full pipeline output + collector telemetry
+      - "4318:4318"   # OTLP/HTTP ingest (from synthetic-generator)
+      - "8888:8888"   # Prometheus: Full pipeline output AND collector's own telemetry
       - "8889:8889"   # Prometheus: Optimised pipeline output
       - "8890:8890"   # Prometheus: Experimental pipeline output
       - "13133:13133" # health_check
-      - "1777:1777"   # pprof
-      - "55679:55679" # zpages
-    depends_on:
-      stress-ng-cpu-heavy: {condition: service_started}
-      stress-ng-io-heavy: {condition: service_started}
+      - "1777:1777"   # pprof (as per spec)
+      - "55679:55679" # zpages (as per spec)
     restart: unless-stopped
-    healthcheck:
+    healthcheck: # Added healthcheck
       test: ["CMD", "curl", "-f", "http://localhost:13133"]
       interval: 20s
       timeout: 5s
       retries: 3
     deploy:
-      resources:
-        limits: 
-          cpus: '1.0'
-          memory: "${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-1024}M"
+      resources: # Matches spec table more closely
+        limits: { cpus: '1.0', memory: "${OTELCOL_MAIN_MEMORY_LIMIT_MIB}MiB" } # 1GB RAM, 500mCPU in spec
 
-  ### Observer / Control-Plane Collector ###
+  ### Observer / Control-Plane Simulator ###
   otelcol-observer:
     image: otel/opentelemetry-collector-contrib:0.103.1
     command: ["--config=/etc/otelcol/config.yaml"]
     env_file: .env
     environment:
-      OTELCOL_OBSERVER_MEMBALLAST_MIB: ${OTELCOL_OBSERVER_MEMBALLAST_MIB:-64}
       GOMAXPROCS: ${OTELCOL_OBSERVER_GOMAXPROCS:-1}
-      GOMEMLIMIT: ${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB:-256}MiB
+      GOMEMLIMIT: ${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB:-256MiB}
     volumes:
       - ./configs/otel/collectors/observer.yaml:/etc/otelcol/config.yaml:ro
+      # Observer does not write to control_signals directly; the actuator script does.
     ports:
-      - "9888:9888"   # Observer's Prometheus endpoint (for control script)
-      - "13134:13133" # Health_check (remapped)
+      - "9888:9888"   # Observer's own Prometheus metrics endpoint (for script to query)
+      - "13134:13133" # Health_check (remapped host port)
       - "1778:1777"   # pprof (remapped)
       - "55680:55679" # zpages (remapped)
     depends_on:
       otelcol-main: {condition: service_healthy, restart: true}
-      prometheus: {condition: service_healthy, restart: true}
+      prometheus: {condition: service_healthy, restart: true} # Script queries prometheus
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:13133"]
@@ -98,48 +62,46 @@ services:
       retries: 3
     deploy:
       resources:
-        limits: 
-          cpus: '0.5'
-          memory: "${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB:-256}M"
+        limits: { cpus: '1.0', memory: "${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB}MiB" }
 
-  ### Control Loop Actuator Script ###
+  ### Control Loop Actuator (PID-lite Script) ###
   control-loop-actuator:
     build:
-      context: .
-      dockerfile: apps/control-actuator/Dockerfile.actuator
+      context: ./apps/control-actuator
+      dockerfile: Dockerfile.actuator
+    # user: "${TARGET_COLLECTOR_UID}:${TARGET_COLLECTOR_GID}"
     env_file: .env
+    command: 
+      - -c
+      - |
+        chmod +x /app/update-control-file.sh
+        while true; do
+          echo "Running control loop iteration..."
+          /app/update-control-file.sh || echo "Control script failed, retrying in 60s..."
+          sleep ${ADAPTIVE_CONTROLLER_INTERVAL_SECONDS:-60}
+        done
     volumes:
-      - ./apps/control-actuator/update-control-file.sh:/app/update-control-file.sh:ro
-      - ./configs/control:/app/control_signals:rw
-      - ./configs/control/optimization_mode_template.yaml:/app/optimization_mode_template.yaml:ro
-    environment:
-      PROMETHEUS_URL: "http://prometheus:9090"
-    command: >
-      sh -c "chmod +x /app/update-control-file.sh &&
-             while true; do
-               echo '[Actuator][$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")] Running update-control-file.sh...' &&
-               /app/update-control-file.sh &&
-               echo '[Actuator][$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")] Script finished. Sleeping for ${ADAPTIVE_CONTROLLER_INTERVAL_SECONDS:-60} seconds...' &&
-               sleep ${ADAPTIVE_CONTROLLER_INTERVAL_SECONDS:-60} || sleep ${ADAPTIVE_CONTROLLER_INTERVAL_SECONDS:-60};
-             done"
+      - ./configs/control:/app/control_signals:rw # Script WRITES to control_signals
+      - ./apps/control-actuator/update-control-file.sh:/app/update-control-file.sh:ro # Script source
     depends_on:
       otelcol-observer: {condition: service_healthy, restart: true}
       prometheus: {condition: service_healthy, restart: true}
     restart: unless-stopped
     deploy:
       resources:
-        limits: {cpus: '0.25', memory: '64M'}
+        limits: { cpus: '0.1', memory: '64M' }
 
-  ### Synthetic Metrics Generator (Go based) ###
+  ### Synthetic Load Generator ###
   synthetic-metrics-generator:
     build:
       context: ./apps/synthetic-generator
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: "otelcol-main:4318"
-      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: "delta"
-      OTEL_RESOURCE_ATTRIBUTES: "service.name=synthetic-generator-service,service.instance.id=${HOSTNAME:-generator}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otelcol-main:4318" # Send to main collector
+      SYNTHETIC_METRICS_PROCESSES: ${SYNTHETIC_PROCESS_COUNT_PER_HOST:-250}
+      SYNTHETIC_METRICS_HOSTS: ${SYNTHETIC_HOST_COUNT:-3}
+      SYNTHETIC_METRICS_INTERVAL: ${SYNTHETIC_METRIC_EMIT_INTERVAL_S:-15}s
     depends_on:
       otelcol-main: {condition: service_healthy, restart: true}
     restart: unless-stopped
@@ -147,49 +109,59 @@ services:
       resources:
         limits: { cpus: '0.5', memory: '256M' }
 
-  ### Monitoring Stack ###
+  ### Prometheus (Monitoring Stack) ###
   prometheus:
-    image: prom/prometheus:v2.52.0
-    command: 
+    image: prom/prometheus:v2.53.0
+    command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=7d' # Shorter retention for testing
       - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=24h'
+      - '--web.enable-admin-api' # For script to use reload endpoint
     volumes:
       - ./configs/monitoring/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
-      - ./configs/monitoring/prometheus/rules:/etc/prometheus_rules:ro
+      - ./configs/monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - ./data/prometheus:/prometheus
-    ports: 
+    ports:
       - "9090:9090"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: '1G' }
 
+  ### Grafana (Monitoring Stack) ###
   grafana:
-    image: grafana/grafana-oss:10.4.2
+    image: grafana/grafana:11.1.0
+    user: "472:472"  # Grafana user UID:GID for proper volume permissions
     env_file: .env
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
-      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     volumes:
       - ./configs/monitoring/grafana/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml:ro
-      - ./configs/monitoring/grafana/dashboards_provider.yaml:/etc/grafana/provisioning/dashboards/provider.yaml:ro
-      - ./configs/dashboards:/grafana_dashboards_provision_path:ro
+      - ./configs/monitoring/grafana/dashboards_provider.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./configs/dashboards:/var/lib/grafana/dashboards:ro # Phoenix dashboards
       - ./data/grafana:/var/lib/grafana
-    ports: 
+    ports:
       - "3000:3000"
-    restart: unless-stopped
     depends_on:
       prometheus: {condition: service_healthy, restart: true}
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 20s
       timeout: 5s
-      retries: 5
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: '512M' }
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  otelcol_main_data:
+  otelcol_observer_data:

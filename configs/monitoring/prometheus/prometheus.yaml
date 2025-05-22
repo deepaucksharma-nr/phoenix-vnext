@@ -13,7 +13,7 @@ global:
 
 # Load rule files from this directory.
 rule_files:
-  - "/etc/prometheus/rules/phoenix_rules.yml" # Path inside Prometheus container
+  - "/etc/prometheus/rules/phoenix_rules.yaml" # Path inside Prometheus container
 
 scrape_configs:
   - job_name: 'otelcol-main-telemetry' # Collector's own operational metrics (from :8888)

@@ -167,6 +167,7 @@ services:
   ### Grafana (Monitoring Stack) ###
   grafana:
     image: grafana/grafana:11.1.0
+    user: "472:472"  # Grafana user UID:GID for proper volume permissions
     env_file: .env
     volumes:
       - ./configs/monitoring/grafana/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml:ro

@@ -33,6 +33,10 @@ Thumbs.db
 *.tmp
 *.log
 
+# Debug collections
+debug-*/
+phoenix-debug-*.tar.gz
+
 # Docker volumes
 prometheus_data/
 grafana_data/

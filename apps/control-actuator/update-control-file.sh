@@ -13,6 +13,17 @@ TEMPLATE_FILE_PATH="${OPT_MODE_TEMPLATE_PATH:-/app/optimization_mode_template.ya
 LOCK_FILE="/tmp/phoenix_control_lock"
 LOCK_TIMEOUT=30  # seconds to wait for lock before timing out
 
+# Cleanup function for trap
+cleanup() {
+    if [ -f "$LOCK_FILE" ]; then
+        rm -f "$LOCK_FILE"
+        log_info "Cleaned up lock file on exit"
+    fi
+}
+
+# Set up trap to cleanup on exit
+trap cleanup EXIT INT TERM
+
 # PID-lite "Set Point" for the 'optimised' pipeline's active time series count
 # This is informational for now, as the script uses fixed thresholds for profile switching.
 TARGET_OPTIMISED_TS_COUNT_SETPOINT="${TARGET_OPTIMIZED_PIPELINE_TS_COUNT:-20000}"

@@ -21,9 +21,10 @@ receivers:
             - target_label: "phoenix_pipeline_label"
               replacement: "full_fidelity"
             - source_labels: [__name__]
-              regex: 'phoenix_full_final_output_(.*)'
+              regex: '^phoenix_full_.*'
+              action: keep
+            - target_label: "__name__"
               replacement: 'phoenix_pipeline_output_cardinality_estimate'
-              target_label: "__name__"
 
         - job_name: 'otelcol-main-opt-output-kpis'
           scrape_interval: 15s
@@ -38,9 +39,10 @@ receivers:
             - target_label: "phoenix_pipeline_label"
               replacement: "optimised"
             - source_labels: [__name__]
-              regex: 'phoenix_opt_final_output_(.*)'
+              regex: '^phoenix_opt_.*'
+              action: keep
+            - target_label: "__name__"
               replacement: 'phoenix_pipeline_output_cardinality_estimate'
-              target_label: "__name__"
 
         - job_name: 'otelcol-main-exp-output-kpis'
           scrape_interval: 15s
@@ -55,9 +57,10 @@ receivers:
             - target_label: "phoenix_pipeline_label"
               replacement: "experimental"
             - source_labels: [__name__]
-              regex: 'phoenix_exp_final_output_(.*)'
+              regex: '^phoenix_exp_.*'
+              action: keep
+            - target_label: "__name__"
               replacement: 'phoenix_pipeline_output_cardinality_estimate'
-              target_label: "__name__"
 
         - job_name: 'otelcol-main-control-signal-metrics'
           scrape_interval: 15s
@@ -84,7 +87,7 @@ receivers:
               replacement: "cardinality_analysis"
             - source_labels: [__name__]
               regex: 'phoenix_cardinality_observatory_(.*)'  
-              replacement: 'phoenix_cardinality_alert_${1}'
+              replacement: 'phoenix_cardinality_alert_'
               target_label: "__name__"
 
 processors:
@@ -127,22 +130,21 @@ exporters:
     metric_expiration: 2m
 
   logging/observer_kpi_log_sampled:
-    loglevel: info
     verbosity: normal
     sampling_initial: 2
     sampling_thereafter: 20
 
 extensions:
-  health_check: { endpoint: "0.0.0.0:13133" }
+  health_check: { endpoint: "0.0.0.0:13134" }
   pprof: { endpoint: "0.0.0.0:1777" }
   zpages: { endpoint: "0.0.0.0:55679" }
   memory_ballast:
-    size_mib: ${OTELCOL_OBSERVER_MEMBALLAST_MIB:-64}
+    size_mib: 64
 
 service:
   extensions: [health_check, pprof, zpages, memory_ballast]
   telemetry:
-    metrics: {address: ":9888"}
+    metrics: {address: ":8888"}
     logs: {level: info, sampling: {initial: 10, thereafter: 1000}}
 
   pipelines:

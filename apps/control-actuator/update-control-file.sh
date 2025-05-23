@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Phoenix v3 Ultimate Process-Metrics Stack - Adaptive Controller Script
 # Revision 2025-05-22 · v3.0-final-uX
-# Queries Prometheus for KPIs, implements PID-lite logic (profile selection),
+# Queries Prometheus for KPIs, implements threshold-based control with hysteresis,
 # and updates the optimization_mode.yaml control file.
 
 set -euo pipefail # Strict mode
@@ -10,7 +10,7 @@ set -euo pipefail # Strict mode
 PROM_API_ENDPOINT="${PROMETHEUS_URL:-http://prometheus:9090}/api/v1"
 CONTROL_FILE_PATH="${CONTROL_SIGNAL_FILE:-/app/control_signals/optimization_mode.yaml}"
 TEMPLATE_FILE_PATH="${OPT_MODE_TEMPLATE_PATH:-/app/optimization_mode_template.yaml}"
-LOCK_FILE="/tmp/phoenix_control_lock"
+LOCK_FILE="/tmp/phoenix_control_lock"  # This is now in shared /tmp volume
 LOCK_TIMEOUT=30  # seconds to wait for lock before timing out
 
 # Cleanup function for trap
@@ -24,8 +24,8 @@ cleanup() {
 # Set up trap to cleanup on exit
 trap cleanup EXIT INT TERM
 
-# PID-lite "Set Point" for the 'optimised' pipeline's active time series count
-# This is informational for now, as the script uses fixed thresholds for profile switching.
+# Target set point for the 'optimised' pipeline's active time series count
+# This is informational for monitoring purposes, as the script uses fixed thresholds for profile switching.
 TARGET_OPTIMISED_TS_COUNT_SETPOINT="${TARGET_OPTIMIZED_PIPELINE_TS_COUNT:-20000}"
 
 # Thresholds for discrete profile switching based on 'optimised' pipeline's TS count
@@ -37,10 +37,7 @@ AGGRESSIVE_MIN_TS_THRESHOLD="${THRESHOLD_OPTIMIZATION_AGGRESSIVE_MIN_TS:-25000}"
 # Added hysteresis factor to prevent oscillation when metrics are near thresholds
 HYSTERESIS_FACTOR="${HYSTERESIS_FACTOR:-0.1}"  # 10% hysteresis zone around thresholds
 
-# Conceptual PID-lite Gains (not directly used for threshold adjustment in this script version)
-# KP="${PID_KP:-0.20}" # Proportional gain
-# KI="${PID_KI:-0.05}" # Integral gain
-# INTEGRAL_STATE_FILE="/tmp/phoenix_pid_integral.state" # File to store integral term
+# Removed PID control references - this implementation uses threshold-based control with hysteresis
 
 STABILITY_PERIOD_SECONDS="${ADAPTIVE_CONTROLLER_STABILITY_SECONDS:-120}"
 CORRELATION_ID_PREFIX="${CORRELATION_ID_PREFIX:-pv3ux}"
@@ -161,7 +158,7 @@ query_prometheus_value() {
 }
 
 # --- Main Controller Logic ---
-log_info "Starting adaptive controller cycle (PID-Lite Profile Selector)."
+log_info "Starting adaptive controller cycle (Threshold-based Profile Selector with Hysteresis)."
 log_info "Control File: $CONTROL_FILE, Template: $TEMPLATE_FILE"
 log_info "Optimised TS Thresholds -> Conservative Max: $CONSERVATIVE_MAX_TS_THRESHOLD, Aggressive Min: $AGGRESSIVE_MIN_TS_THRESHOLD"
 log_info "Stability Period: $STABILITY_PERIOD_SECONDS seconds"
@@ -222,7 +219,7 @@ if [[ "$CURRENT_FULL_TS" =~ ^[0-9]+(\.[0-9]+)?$ && $(echo "$CURRENT_FULL_TS > 0"
 fi
 log_info "Current Cost Reduction Ratio (Opt vs Full): $CURRENT_COST_REDUCTION_RATIO"
 
-# 4. PID-lite logic with cardinality explosion override and hysteresis for stable transitions
+# 4. Threshold-based control logic with cardinality explosion override and hysteresis for stable transitions
 PROPOSED_PROFILE=""
 TRIGGER_REASON_TEXT=""
 
@@ -237,7 +234,7 @@ elif [[ "$CARDINALITY_RISK_PROCESSES" -gt 10 ]]; then
   log_warn "$TRIGGER_REASON_TEXT"
 fi
 
-# If no cardinality emergency, use normal PID-lite logic
+# If no cardinality emergency, use normal threshold-based logic with hysteresis
 if [[ -z "$PROPOSED_PROFILE" ]]; then
 
 # Ensure thresholds are treated as numbers by bc
@@ -294,7 +291,7 @@ else # balanced profile
     fi
 fi
 
-fi # End of normal PID-lite logic block
+fi # End of normal threshold-based logic block
 
 log_info "Proposed Profile based on Optimised TS: $PROPOSED_PROFILE. Reason: $TRIGGER_REASON_TEXT"
 log_info "Hysteresis factor: $HYSTERESIS_FACTOR_NUM, Conservative Max with hysteresis: $CONSERVATIVE_MAX_WITH_HYSTERESIS, Aggressive Min with hysteresis: $AGGRESSIVE_MIN_WITH_HYSTERESIS"

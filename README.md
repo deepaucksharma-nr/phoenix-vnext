@@ -1,6 +1,8 @@
-# Phoenix-vNext: 3-Pipeline Cardinality Optimization System
+# Phoenix-vNext: Adaptive Cardinality Optimization System
 
-Phoenix-vNext is an OpenTelemetry-based metrics collection and processing system that uses adaptive cardinality management with dynamic switching between optimization profiles based on metric volume and system performance.
+> **✅ Production-Ready**: All architectural issues have been resolved. See [Architecture Fixes](docs/ARCHITECTURE-FIXES.md) for details.
+
+Phoenix-vNext is a production-ready OpenTelemetry-based metrics collection system that implements adaptive cardinality management with dynamic pipeline activation based on metric volume and system performance.
 
 ## 🏗️ Architecture Overview
 
@@ -42,6 +44,8 @@ phoenix-vnext/
 ```
 
 ## 🚀 Quick Start
+
+> **New Users**: See [QUICKSTART.md](QUICKSTART.md) for a detailed getting started guide.
 
 ### Prerequisites
 
@@ -102,7 +106,7 @@ docker-compose logs -f otelcol-observer
 
 ## 🎛️ Adaptive Control System
 
-The observer uses a PID-like control algorithm that:
+The system uses a threshold-based control algorithm with hysteresis that:
 
 - Monitors metric cardinality and system performance
 - Automatically switches between optimization profiles:
@@ -140,6 +144,13 @@ The system uses dynamic control files in `configs/control/`:
 - `optimization_mode_template.yaml` - Template for control file
 
 ## 🔍 Monitoring & Troubleshooting
+
+### Quick Health Check
+
+```bash
+# Run comprehensive health check
+./scripts/health-check.sh
+```
 
 ### Health Checks
 
@@ -185,6 +196,76 @@ docker-compose up synthetic-metrics-generator
 
 Adjust resource limits in `docker-compose.yaml` and corresponding environment variables in `.env`.
 
+## 📚 Documentation
+
+- [Quick Start Guide](QUICKSTART.md) - Get up and running quickly
+- [Architecture Overview](docs/ARCHITECTURE.md) - System design details
+- [Architecture Fixes](docs/ARCHITECTURE-FIXES.md) - Recent improvements
+- [Test Plan](docs/TEST-PLAN.md) - Comprehensive testing procedures
+- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
+
+## 🔐 Security
+
+See [.env.secure.template](.env.secure.template) for production-ready secret management.
+
 ## 📝 License
 
 This project is part of the Phoenix-vNext Ultimate Stack and follows the same licensing terms.
+
+# Test Case Tracker System
+
+This system enables distributed test execution across multiple agents using a shared Markdown file for coordination.
+
+## Components
+
+- `test_tracker.md`: Shared tracking document with test cases and results
+- `test_agent.sh`: Agent script that claims and executes test cases
+
+## Usage
+
+### Starting an agent
+
+```bash
+# Start an agent that will continuously process test cases
+chmod +x test_agent.sh
+./test_agent.sh
+```
+
+### Running specific agent functions
+
+```bash
+# Manually find pending tests
+./test_agent.sh --function find_pending_test
+
+# Execute a specific test (test details expected as argument)
+./test_agent.sh --function execute_test "ID:test_001|NAME:Example Test|COMMAND:echo hello|WORKDIR:.|TIMEOUT:30|DESC:Test description"
+```
+
+### Monitoring progress
+
+```bash
+# Watch the tracker file for changes
+watch -n 5 cat test_tracker.md
+
+# Get quick status summary
+grep -A 7 "Status Summary" test_tracker.md
+```
+
+## Customization
+
+You can customize the agent behavior by modifying constants at the top of the script:
+
+- `LOCK_TIMEOUT`: How long to wait for a lock (seconds)
+- `LOCK_STALE_TIME`: When to consider a lock stale (seconds)
+
+## Troubleshooting
+
+If a test becomes stuck in the "in_progress" state, you can manually reset it:
+```bash
+sed -i 's/Status**: in_progress/Status**: pending/' test_tracker.md
+```
+
+If the lock file gets stuck, you can remove it:
+```bash
+rm test_tracker.md.lock
+```

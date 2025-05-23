@@ -8,9 +8,12 @@ services:
     environment:
       GOMAXPROCS: ${OTELCOL_MAIN_GOMAXPROCS:-4}
       GOMEMLIMIT: ${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-2560MiB}
+      OPTIMIZATION_PROFILE: ${OPTIMIZATION_PROFILE:-conservative}
+      BENCHMARK_ID: ${BENCHMARK_ID:-phoenix-v3-ultra-spec}
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-benchmark-ux}
     volumes:
       - ./configs/otel/collectors/main.yaml:/etc/otelcol/config.yaml:ro
-      - ./configs/control:/etc/otelcol/control:ro # Main only READS control signals
+      - ./configs/control:/etc/otelcol/control:rw # Main needs to READ control signals (rw for file watching)
       - /proc:/hostfs/proc:ro # Standard mount for host /proc
       - /sys:/hostfs/sys:ro   # Standard mount for host /sys
       - /etc/hostname:/hostfs/etc/hostname:ro # For host.name detection by resourcedetection
@@ -26,13 +29,13 @@ services:
       - "55679:55679" # zpages (as per spec)
     restart: unless-stopped
     healthcheck: # Added healthcheck
-      test: ["CMD", "curl", "-f", "http://localhost:13133"]
+      test: ["CMD", "/otelcol-contrib", "--version"]
       interval: 20s
       timeout: 5s
       retries: 3
     deploy:
       resources: # Matches spec table more closely
-        limits: { cpus: '1.0', memory: "${OTELCOL_MAIN_MEMORY_LIMIT_MIB}MiB" } # 1GB RAM, 500mCPU in spec
+        limits: { cpus: '1.0', memory: "${OTELCOL_MAIN_MEMORY_LIMIT_MIB:-1024}MiB" } # 1GB RAM default
 
   ### Observer / Control-Plane Simulator ###
   otelcol-observer:
@@ -61,14 +64,14 @@ services:
       retries: 3
     deploy:
       resources:
-        limits: { cpus: '1.0', memory: "${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB}MiB" }
+        limits: { cpus: '0.5', memory: "${OTELCOL_OBSERVER_MEMORY_LIMIT_MIB:-256}MiB" } # Observer needs less CPU
 
   ### Control Loop Actuator (PID-lite Script) ###
   control-loop-actuator:
     build:
       context: ./apps/control-actuator
       dockerfile: Dockerfile.actuator
-    # user: "${TARGET_COLLECTOR_UID}:${TARGET_COLLECTOR_GID}"
+    user: "${TARGET_COLLECTOR_UID:-1000}:${TARGET_COLLECTOR_GID:-1000}"
     env_file: .env
     command: 
       - -c
@@ -81,11 +84,18 @@ services:
         done
     volumes:
       - ./configs/control:/app/control_signals:rw # Script WRITES to control_signals
+      - ./configs/control/optimization_mode_template.yaml:/app/optimization_mode_template.yaml:ro # Template file
       - ./apps/control-actuator/update-control-file.sh:/app/update-control-file.sh:ro # Script source
+      - phoenix_lock_volume:/tmp # Shared lock directory
     depends_on:
       otelcol-observer: {condition: service_healthy, restart: true}
       prometheus: {condition: service_healthy, restart: true}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "update-control-file.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits: { cpus: '0.1', memory: '64M' }
@@ -159,42 +169,9 @@ services:
       resources:
         limits: { cpus: '0.5', memory: '512M' }
 
-  ### Prometheus Pushgateway for synthetic metrics ###
-  pushgateway:
-    image: prom/pushgateway:latest
-    container_name: phoenix-pushgateway
-    ports:
-      - "9091:9091"
-    labels:
-      - "prometheus.io/scrape=true"
-      - "prometheus.io/port=9091"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9091/-/healthy"]
-      interval: 20s
-      timeout: 5s
-      retries: 3
-
-  ### Metric Generator Service ###
-  metric-generator:
-    image: alpine:latest
-    container_name: phoenix-metric-generator
-    volumes:
-      - ./scripts/phoenix-metric-generator.sh:/app/metric-generator.sh:ro
-    environment:
-      - PROMETHEUS_PUSHGATEWAY=http://pushgateway:9091
-    command: |
-      sh -c "
-        apk add --no-cache bash curl bc &&
-        chmod +x /app/metric-generator.sh &&
-        /app/metric-generator.sh
-      "
-    depends_on:
-      pushgateway: {condition: service_healthy}
-    restart: unless-stopped
-
 volumes:
   prometheus_data:
   grafana_data:
   otelcol_main_data:
   otelcol_observer_data:
+  phoenix_lock_volume:

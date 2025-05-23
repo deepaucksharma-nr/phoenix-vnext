@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Phoenix-vNext is a 3-Pipeline Cardinality Optimization System for OpenTelemetry metrics collection and processing. The system uses adaptive cardinality management with dynamic switching between optimization profiles (conservative, balanced, aggressive) based on metric volume and system performance through a PID-like control algorithm.
+Phoenix-vNext is a 3-Pipeline Cardinality Optimization System for OpenTelemetry metrics collection and processing. The system uses adaptive cardinality management with dynamic switching between optimization profiles (conservative, balanced, aggressive) based on metric volume and system performance through a threshold-based control algorithm with hysteresis.
 
 ## Architecture
 
 ### Core System Components
 - **Main Collector** (`otelcol-main`): Runs 3 parallel pipelines with different cardinality optimization levels
 - **Observer Collector** (`otelcol-observer`): Control plane that monitors pipeline metrics and system performance
-- **Control Actuator** (`control-loop-actuator`): Bash script implementing PID-like adaptive control logic
+- **Control Actuator** (`control-loop-actuator`): Bash script implementing threshold-based adaptive control logic with hysteresis and stability periods
 - **Synthetic Generator** (`synthetic-metrics-generator`): Go-based load generator for testing and benchmarking
 
 ### Pipeline Architecture
@@ -22,12 +22,13 @@ The system operates 3 distinct pipelines in parallel:
 
 ### Adaptive Control System
 - Observer monitors `phoenix_observer_kpi_store_phoenix_pipeline_output_cardinality_estimate` metrics
-- Control actuator applies discrete profile switching based on time series count thresholds:
+- Control actuator applies threshold-based switching with 10% hysteresis buffers:
   - Conservative: < 15,000 time series
   - Balanced: 15,000 - 25,000 time series  
   - Aggressive: > 25,000 time series
-- Control signals written to `configs/control/optimization_mode.yaml` and read by main collector
-- Stability periods prevent rapid profile oscillation
+- Control signals written atomically to `configs/control/optimization_mode.yaml` using `yq` with file locking
+- 120-second stability period prevents rapid profile oscillation
+- Lock file mechanism prevents concurrent control script execution
 
 ## Development Commands
 
@@ -89,8 +90,8 @@ curl http://localhost:13134  # Observer health
 
 ### Monitoring Stack
 - `configs/monitoring/prometheus/prometheus.yaml`: Prometheus scrape configuration for all collector endpoints
-- `configs/monitoring/prometheus/rules/phoenix_rules.yml`: Recording rules and alerts for optimization metrics
-- `configs/monitoring/grafana/`: Datasource configuration and dashboard provisioning
+- `configs/monitoring/prometheus/rules/phoenix_rules.yaml`: Recording rules and alerts for optimization metrics
+- `configs/monitoring/grafana/`: Datasource configuration and dashboard provisioning with functional dashboards
 
 ## Key Environment Variables
 
@@ -123,8 +124,8 @@ ENABLE_NR_EXPORT_EXPERIMENTAL="false"
 ## Monitoring & Access Points
 
 ### Service Endpoints
-- **Grafana Dashboard**: http://localhost:3000 (admin/admin)
-- **Prometheus**: http://localhost:9090
+- **Grafana Dashboard**: http://localhost:3000 (admin/admin) - Two functional dashboards: Phoenix Overview and Adaptive Control Loop
+- **Prometheus**: http://localhost:9090 - Includes recording rules for cost reduction metrics and signal preservation analysis
 - **Main Collector Metrics**: http://localhost:8888/metrics (full pipeline + collector telemetry)
 - **Optimized Pipeline**: http://localhost:8889/metrics 
 - **Experimental Pipeline**: http://localhost:8890/metrics
